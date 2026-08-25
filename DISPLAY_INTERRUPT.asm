@@ -88,7 +88,7 @@ DEV_SCROLL_LENGTH EQU 3DH        ; 61 characters before the developer name line 
 ; 20H.3 = equation cursor should be visible after a mode-title redraw
 ; 20H.4 = mode-title marquee is active
 ; 20H.5 = line 1 begins with the complete ANS token
-; 20H.6 = ignore backspace after '=' until a new entry begins
+; 20H.6 = backspace after '=' becomes CLR
 ; 21H.0 = software cursor blink phase while the mode title is active
 ; 21H.1 = operator-instruction pages are active
 ; 21H.2 = RX_READY: serial ISR has placed one byte in RX_ISR_BYTE
@@ -113,16 +113,8 @@ MAIN:
     MOV MODE_SCROLL_OFFSET, #00H ;start the animated tittle at cell position zero
     MOV INPUT_CURSOR_ADDR, #LCD_LINE1 ;load 80H, the first position of LCD line 1
     ;Clear visual flags:
-    CLR 20H.0
-    CLR 20H.1
-    CLR 20H.2
-    CLR 20H.3
-    CLR 20H.4
-    CLR 20H.5
-    CLR 20H.6
-    CLR 21H.0
-    CLR 21H.1
-    CLR 21H.2                    ; RX_READY
+    MOV 20H, #0
+    MOV 21H, #0
     LCALL UART_INIT
     SETB ES                      ; Enable the serial interrupt
     SETB EA                      ; Global interrupt enable
@@ -139,26 +131,26 @@ DISPLAY_LOOP:
     SJMP DISPLAY_LOOP		 
 
 DISPLAY_HAVE_BYTE:
-    LCALL RECEIVE_BYTE
-    MOV RX_BYTE, A
-
-    CJNE A, #0AH, $ + 3
-    JNC CHECK_EVENT_STARTUP
-    ADD A, #30H
-    MOV RX_BYTE, A
-    MOV A, DISPLAY_MODE
-    CJNE A, #02H, DISPLAY_DECIMAL_DIGIT
+    LCALL RECEIVE_BYTE		;A=received bytes
+    MOV RX_BYTE, A		;save the bytes as copy
+    CJNE A, #0AH, CHECK_CARRY	;Compare if A<10, C=1. A>=10, C=0
+CHECK_CARRY:
+    JNC CHECK_EVENT_STARTUP	;Jump C=0, event code
+    ADD A, #30H			;digit code, add 30H convert to ASCII CODE
+    MOV RX_BYTE, A		;save ASCII CODE
+    MOV A, DISPLAY_MODE		; To check what is the current mode
+    CJNE A, #02H, DISPLAY_DECIMAL_DIGIT	;Display Decimal char if A not equal 2
     CLR 20H.1
-    MOV A, RX_BYTE
-    LCALL LOGIC_APPEND_CHAR
+    MOV A, RX_BYTE		;load ACSII CODE BACK
+    LCALL LOGIC_APPEND_CHAR	;Display logic 0 or 1
     LJMP DISPLAY_LOOP
 DISPLAY_DECIMAL_DIGIT:
     CLR 20H.1
-	MOV LAST_CHAR_LEN, #01H   ; 1 LCD character
-    MOV A, RX_BYTE
-    LCALL LCD_DATA
-    INC INPUT_CURSOR_ADDR
-    LJMP DISPLAY_LOOP
+    MOV LAST_CHAR_LEN, #01H   	; 1 LCD character
+    MOV A, RX_BYTE		; load ASCII Code back
+    LCALL LCD_DATA		; Print decimal 
+    INC INPUT_CURSOR_ADDR	; Move cussor location one char forward
+    LJMP DISPLAY_LOOP		; Return loop
 
 CHECK_EVENT_STARTUP:
     MOV A, RX_BYTE
@@ -171,11 +163,11 @@ CHECK_EVENT_MODE_AR:
     LCALL SHOW_MODE_STATUS
     LJMP DISPLAY_LOOP
 CHECK_EVENT_MODE_LOG:
-    CJNE A, #EV_MODE_LOG, CHECK_EVENT_MODE_ADD
+    CJNE A, #EV_MODE_LOG, CHECK_EVENT_MODE_ADV
     MOV DISPLAY_MODE, #02H
     LCALL SHOW_MODE_STATUS
     LJMP DISPLAY_LOOP
-CHECK_EVENT_MODE_ADD:
+CHECK_EVENT_MODE_ADV:
     CJNE A, #EV_MODE_ADV, CHECK_EVENT_CLEAR
     MOV DISPLAY_MODE, #03H
     LCALL SHOW_MODE_STATUS
@@ -206,16 +198,16 @@ CHECK_EVENT_EQUALS:
 DISPLAY_NORMAL_EQUALS:
     MOV A, RX_BYTE
     LCALL LCD_DATA
-    INC INPUT_CURSOR_ADDR
-EQUALS_CURSOR_OFF:
+    INC INPUT_CURSOR_ADDR 	; Move cussor location one char forward
+EQUALS_CURSOR_OFF: 		; off cursor after'=' pressed
     LCALL LCD_CURSOR_OFF
     LJMP DISPLAY_LOOP
 CHECK_EVENT_SCROLL_LEFT:
     CJNE A, #EV_SCROLL_LEFT, CHECK_EVENT_SCROLL_RIGHT
-    JNB 21H.1, SCROLL_LOGICAL_LEFT
-    LJMP SHOW_PREVIOUS_INSTRUCTION
+    JNB 21H.1, SCROLL_LOGICAL_LEFT 	;jump if not help page
+    LJMP SHOW_PREVIOUS_INSTRUCTION	;help page scrolling
 SCROLL_LOGICAL_LEFT:
-    LCALL LOGIC_SCROLL_LEFT
+    LCALL LOGIC_SCROLL_LEFT		;logic mode scroll left
     LJMP DISPLAY_LOOP
 CHECK_EVENT_SCROLL_RIGHT:
     CJNE A, #EV_SCROLL_RIGHT, CHECK_EVENT_INSTRUCTIONS
@@ -226,8 +218,8 @@ SCROLL_LOGICAL_RIGHT:
     LJMP DISPLAY_LOOP
 CHECK_EVENT_INSTRUCTIONS:
     CJNE A, #EV_INSTRUCTIONS, CHECK_EVENT_POWER_OFF
-    CLR 20H.4
-    LCALL SHOW_OPERATOR_INSTRUCTIONS
+    CLR 20H.4	;title animation not active
+    LCALL SHOW_OPERATOR_INSTRUCTIONS	;show scoling help page
     LJMP DISPLAY_LOOP
 CHECK_EVENT_POWER_OFF:
     CJNE A, #EV_POWER_OFF, CHECK_EVENT_BACKSPACE
@@ -235,14 +227,14 @@ CHECK_EVENT_POWER_OFF:
     LJMP DISPLAY_LOOP
 CHECK_EVENT_BACKSPACE:
     CJNE A, #EV_BACKSPACE, CHECK_EVENT_BACKSPACE_ANS
-    JB 20H.6, BACKSPACE_EVENT_DONE
+    JB 20H.6, BACKSPACE_EVENT_DONE	;jump if '=' pressed
     LCALL HANDLE_LCD_BACKSPACE
     CLR 20H.1
 BACKSPACE_EVENT_DONE:
     LJMP DISPLAY_LOOP
 CHECK_EVENT_BACKSPACE_ANS:
     CJNE A, #EV_BACKSPACE_ANS, CHECK_EVENT_BS_SHOW_OP
-    JB 20H.6, BACKSPACE_ANS_EVENT_DONE
+    JB 20H.6, BACKSPACE_ANS_EVENT_DONE	;jump if '=' pressed
     LCALL HANDLE_LCD_BACKSPACE_ANS
 BACKSPACE_ANS_EVENT_DONE:
     LJMP DISPLAY_LOOP
@@ -586,19 +578,19 @@ SHOW_MODE_MENU:
     CLR 20H.6
     LCALL LOGIC_BUFFER_RESET
     LCALL LCD_CURSOR_OFF
-    MOV A, #01H
+    MOV A, #01H			;clear screen
     LCALL LCD_CMD
     MOV A, #LCD_LINE1
     LCALL LCD_CMD
-    MOV DPTR, #STR_SELECT_MODES
+    MOV DPTR, #STR_SELECT_MODES	;mode selection
     LCALL LCD_PUTS
     MOV A, #LCD_LINE2
     LCALL LCD_CMD
-    MOV DPTR, #STR_MODE_MENU
+    MOV DPTR, #STR_MODE_MENU 	;mode string
     LCALL LCD_PUTS
     RET
 
-SHOW_MODE_STATUS:
+SHOW_MODE_STATUS:	;call from check event mode code
     MOV A, DISPLAY_MODE
     JZ SHOW_MODE_MENU
     CLR 20H.1
@@ -665,6 +657,8 @@ MODE_SCROLL_CURSOR_ON:
 MODE_SCROLL_CURSOR_APPLY:
     LCALL LCD_CMD
     CPL 21H.0
+    MOV A, INPUT_CURSOR_ADDR
+    LCALL LCD_CMD             ; Restore explicit line-1 DDRAM address last
     RET
 
 MODE_SCROLL_INSTRUCTION_PAGE:
@@ -1276,9 +1270,14 @@ LCD_CURSOR_ON:
     SETB 20H.3
     MOV A, #00EH 	; Display on, Cursor blinking
     LJMP LCD_CMD
+    MOV A, INPUT_CURSOR_ADDR
+    LJMP LCD_CMD
+    
 LCD_CURSOR_OFF:
     CLR 20H.3
     MOV A, #00CH	;Cursor off, Display on
+    LJMP LCD_CMD
+    MOV A, INPUT_CURSOR_ADDR
     LJMP LCD_CMD
 
 ; ===== D11: TIMING DELAYS AND CODE-MEMORY TEXT TABLES =====
