@@ -51,21 +51,21 @@ EV_BS_REMOVE_OP EQU 0EEH        ; Backspace removed an operator
 EV_CHAIN_VALUE  EQU 0EFH        ; Actual intermediate Arithmetic value
 
 ;---RAM EQU-----
-RX_BYTE       EQU 30H
+RX_BYTE       EQU 30H		;RX code memory
 DISPLAY_MODE  EQU 31H           ; 0 menu, 1 arithmetic, 2 logical, 3 additional
-RESULT_H      EQU 32H
+RESULT_H      EQU 32H		
 RESULT_L      EQU 33H
 TMP_H         EQU 34H
 TMP_L         EQU 35H
-QUO_H         EQU 36H
+QUO_H         EQU 36H		;Division
 QUO_L         EQU 37H
-REM_L         EQU 38H
-DIGIT_COUNT   EQU 39H
+REM_L         EQU 38H		;Remainder
+DIGIT_COUNT   EQU 39H		;how many digit in a number
 BIT_TEMP      EQU 3AH
 RESULT_REM_H  EQU 3BH
 RESULT_REM_L  EQU 3CH
-TOTAL_WIDTH   EQU 3FH
-EXPR_BUF      EQU 40H            ; 18-byte complete logical expression
+TOTAL_WIDTH   EQU 3FH		;total width used
+EXPR_BUF      EQU 40H           ; 18-byte complete logical expression
 EXPR_LEN      EQU 52H
 EXPR_VIEW     EQU 53H            ; First character shown on LCD line 1
 LAST_CHAR_LEN EQU 54H        ; Tracks width of last printed token (1, 2, or 4)
@@ -93,7 +93,7 @@ DEV_SCROLL_LENGTH EQU 3DH        ; 61 characters before the developer name line 
 ; 21H.1 = operator-instruction pages are active
 ; 21H.2 = RX_READY: serial ISR has placed one byte in RX_ISR_BYTE
 
-; ===== D01: STARTUP, MAIN RECEIVE LOOP AND EVENT DECODER =====
+; ===== D01: STARTUP, MAIN RECEIVE LOOP AND RX_BYTES DECODER =====
     ORG 0000H
     LJMP MAIN
 
@@ -133,13 +133,14 @@ DISPLAY_LOOP:
 DISPLAY_HAVE_BYTE:
     LCALL RECEIVE_BYTE		;A=received bytes
     MOV RX_BYTE, A		;save the bytes as copy
-    CJNE A, #0AH, CHECK_CARRY	;Compare if A<10, C=1. A>=10, C=0
-CHECK_CARRY:
-    JNC CHECK_EVENT_STARTUP	;Jump C=0, event code
+    CJNE A, #0AH, $+3	;Compare if A<10, C=1. A>=10, C=0
+    JNC EVENT_DECODER	;Jump C=0, event code
+DIGIT_DECODER:
     ADD A, #30H			;digit code, add 30H convert to ASCII CODE
     MOV RX_BYTE, A		;save ASCII CODE
     MOV A, DISPLAY_MODE		; To check what is the current mode
     CJNE A, #02H, DISPLAY_DECIMAL_DIGIT	;Display Decimal char if A not equal 2
+DISPLAY_BIN_DIGIT:
     CLR 20H.1
     MOV A, RX_BYTE		;load ACSII CODE BACK
     LCALL LOGIC_APPEND_CHAR	;Display logic 0 or 1
@@ -152,7 +153,7 @@ DISPLAY_DECIMAL_DIGIT:
     INC INPUT_CURSOR_ADDR	; Move cussor location one char forward
     LJMP DISPLAY_LOOP		; Return loop
 
-CHECK_EVENT_STARTUP:
+EVENT_DECODER:
     MOV A, RX_BYTE
     CJNE A, #EV_STARTUP, CHECK_EVENT_MODE_AR
     LCALL SHOW_STARTUP
@@ -192,6 +193,7 @@ CHECK_EVENT_EQUALS:
     MOV RX_BYTE, A
     MOV A, DISPLAY_MODE
     CJNE A, #02H, DISPLAY_NORMAL_EQUALS
+DISPLAY_LOGIC_EQUALS:
     MOV A, RX_BYTE
     LCALL LOGIC_APPEND_CHAR
     SJMP EQUALS_CURSOR_OFF
@@ -321,11 +323,12 @@ NOT_SQRT_OP:
 	LJMP DISPLAY_LOOP
 
 ; ===== D02: OPERATOR TOKENS, EQUATION EDITING AND BACKSPACE =====
-DISPLAY_OPERATOR:
+DISPLAY_OPERATOR:;*1
+DISPLAY_OP_SQUARE:
     MOV A, RX_BYTE
-    CJNE A, #EV_OP_SQUARE, CHECK_OP_POWER
+    CJNE A, #EV_OP_SQUARE, DISPLAY_OP_POWER
     CLR 20H.1
-	MOV LAST_CHAR_LEN, #02H   ; Square outputs 2 characters (^2)
+    MOV LAST_CHAR_LEN, #02H   ; Square outputs 2 characters (^2)
     MOV A, #'^'
     LCALL LCD_DATA
     MOV A, #'2'
@@ -334,13 +337,13 @@ DISPLAY_OPERATOR:
     INC INPUT_CURSOR_ADDR
     LCALL LCD_CURSOR_OFF
     LJMP DISPLAY_LOOP
-CHECK_OP_POWER:
-    CJNE A, #EV_OP_POWER, CHECK_OP_SQRT
+DISPLAY_OP_POWER:
+    CJNE A, #EV_OP_POWER, DISPLAY_OP_SQRT
     MOV BIT_TEMP, RX_BYTE
     MOV RX_BYTE, #'^'           
     SJMP DISPLAY_ONE_COMMON
-CHECK_OP_SQRT:
-    CJNE A, #EV_OP_SQRT, DISPLAY_TABLE_OPERATOR
+DISPLAY_OP_SQRT:
+    CJNE A, #EV_OP_SQRT, CHECK_TABLE_OPERATOR
     CLR 20H.1
 	MOV LAST_CHAR_LEN, #04H   ; Square root is displayed as one ^0.5 token
     MOV A, #'^'
@@ -357,29 +360,30 @@ CHECK_OP_SQRT:
     INC INPUT_CURSOR_ADDR
     LCALL LCD_CURSOR_OFF
     LJMP DISPLAY_LOOP
-DISPLAY_TABLE_OPERATOR:
+CHECK_TABLE_OPERATOR:
     MOV BIT_TEMP, RX_BYTE       
     CLR C
     SUBB A, #EV_OP_ADD
     MOV DPTR, #OPERATOR_SYMBOLS
     MOVC A, @A+DPTR
     MOV RX_BYTE, A
-DISPLAY_ONE_COMMON:
-	MOV LAST_CHAR_LEN, #01H   ; Standard binary operators = 1 char
-    JNB 20H.1, DISPLAY_NEW_BINARY_OPERATOR
-    MOV A, DISPLAY_MODE
+DISPLAY_ONE_COMMON:;check operator
+    MOV LAST_CHAR_LEN, #01H   ; Standard binary operators = 1 char
+    JNB 20H.1, DISPLAY_NEW_BINARY_OPERATOR	;jump if not replaceable binary ope
+    MOV A, DISPLAY_MODE	;check mode
     CJNE A, #02H, DISPLAY_REPLACE_NORMAL_OPERATOR
+DISPLAY_REPLACE_LOGIC_OPERATOR:
     MOV A, RX_BYTE
     LCALL LOGIC_REPLACE_LAST_CHAR
     SJMP OPERATOR_CHARACTER_DONE
 DISPLAY_REPLACE_NORMAL_OPERATOR:
-    MOV A, #010H               
+    MOV A, #010H	;clear screen
     LCALL LCD_CMD
     MOV A, RX_BYTE
     LCALL LCD_DATA
     SJMP OPERATOR_CHARACTER_DONE
 DISPLAY_NEW_BINARY_OPERATOR:
-    SETB 20H.1
+    SETB 20H.1	;new replaceable binary operator
 DISPLAY_APPEND_OPERATOR:
     MOV A, DISPLAY_MODE
     CJNE A, #02H, DISPLAY_NORMAL_OPERATOR
@@ -1378,3 +1382,4 @@ SCROLL_DEVELOPERS:  DB 'DANIEL CHEE    GOH SHAO SEAN    TAN E-KEN    THEN MUN PI
                     DB 'DANIEL CHEE    '
 
     END
+
