@@ -46,8 +46,8 @@ EV_SCROLL_RIGHT EQU 0E9H	;scroll right (mode 2 and help page)
 EV_BACKSPACE	EQU 0EAH	;Normal backspace (delete 1 cell)
 EV_BACKSPACE_ANS EQU 0EBH       ; Delete the complete ANS token
 EV_POWER_OFF    EQU 0ECH        ; Turn LCD off in the mode menu
-EV_BS_SHOW_OP   EQU 0EDH        ; Backspace exposed an operator
-EV_BS_REMOVE_OP EQU 0EEH        ; Backspace removed an operator
+EV_BS_SHOW_OP   EQU 0EDH        ; Backspace exposed an operator， 1+1 del--> 1+
+EV_BS_REMOVE_OP EQU 0EEH        ; Backspace removed an operator	  1+ del --> 1
 EV_CHAIN_VALUE  EQU 0EFH        ; Actual intermediate Arithmetic value
 
 ;---RAM EQU-----
@@ -242,13 +242,13 @@ BACKSPACE_ANS_EVENT_DONE:
     LJMP DISPLAY_LOOP
 CHECK_EVENT_BS_SHOW_OP:
     CJNE A, #EV_BS_SHOW_OP, CHECK_EVENT_BS_REMOVE_OP
-    LCALL HANDLE_LCD_BACKSPACE
     SETB 20H.1
+    LCALL HANDLE_LCD_BACKSPACE
     LJMP DISPLAY_LOOP
 CHECK_EVENT_BS_REMOVE_OP:
     CJNE A, #EV_BS_REMOVE_OP, CHECK_EVENT_RESULT_DEC
-    LCALL HANDLE_LCD_BACKSPACE
     CLR 20H.1
+    LCALL HANDLE_LCD_BACKSPACE
     LJMP DISPLAY_LOOP
 CHECK_EVENT_RESULT_DEC:
     CJNE A, #EV_RESULT_DEC, CHECK_EVENT_RESULT_BIN
@@ -323,10 +323,10 @@ NOT_SQRT_OP:
 	LJMP DISPLAY_LOOP
 
 ; ===== D02: OPERATOR TOKENS, EQUATION EDITING AND BACKSPACE =====
-DISPLAY_OPERATOR:;*1
+DISPLAY_OPERATOR:
 DISPLAY_OP_SQUARE:
     MOV A, RX_BYTE
-    CJNE A, #EV_OP_SQUARE, DISPLAY_OP_POWER
+    CJNE A, #EV_OP_SQUARE, DISPLAY_OP_SQRT
     CLR 20H.1
     MOV LAST_CHAR_LEN, #02H   ; Square outputs 2 characters (^2)
     MOV A, #'^'
@@ -337,15 +337,10 @@ DISPLAY_OP_SQUARE:
     INC INPUT_CURSOR_ADDR
     LCALL LCD_CURSOR_OFF
     LJMP DISPLAY_LOOP
-DISPLAY_OP_POWER:
-    CJNE A, #EV_OP_POWER, DISPLAY_OP_SQRT
-    MOV BIT_TEMP, RX_BYTE
-    MOV RX_BYTE, #'^'           
-    SJMP DISPLAY_ONE_COMMON
 DISPLAY_OP_SQRT:
-    CJNE A, #EV_OP_SQRT, CHECK_TABLE_OPERATOR
+    CJNE A, #EV_OP_SQRT, DISPLAY_OP_POWER
     CLR 20H.1
-	MOV LAST_CHAR_LEN, #04H   ; Square root is displayed as one ^0.5 token
+    MOV LAST_CHAR_LEN, #04H   ; Square root is displayed as one ^0.5 token
     MOV A, #'^'
     LCALL LCD_DATA
     MOV A, #'0'
@@ -360,13 +355,18 @@ DISPLAY_OP_SQRT:
     INC INPUT_CURSOR_ADDR
     LCALL LCD_CURSOR_OFF
     LJMP DISPLAY_LOOP
+DISPLAY_OP_POWER:
+    CJNE A, #EV_OP_POWER, CHECK_TABLE_OPERATOR
+    MOV BIT_TEMP, RX_BYTE
+    MOV RX_BYTE, #'^'
+    SJMP DISPLAY_ONE_COMMON
 CHECK_TABLE_OPERATOR:
-    MOV BIT_TEMP, RX_BYTE       
+    MOV BIT_TEMP, RX_BYTE       ;originl event code
     CLR C
-    SUBB A, #EV_OP_ADD
-    MOV DPTR, #OPERATOR_SYMBOLS
+    SUBB A, #EV_OP_ADD		;0-7
+    MOV DPTR, #OPERATOR_SYMBOLS ;move to the operator table
     MOVC A, @A+DPTR
-    MOV RX_BYTE, A
+    MOV RX_BYTE, A		;display ascii code
 DISPLAY_ONE_COMMON:;check operator
     MOV LAST_CHAR_LEN, #01H   ; Standard binary operators = 1 char
     JNB 20H.1, DISPLAY_NEW_BINARY_OPERATOR	;jump if not replaceable binary ope
@@ -405,12 +405,13 @@ DISPLAY_LOOP_JUMP:
     LJMP DISPLAY_LOOP
 
 HANDLE_LCD_BACKSPACE:
+    CLR 20H.1
     MOV A, DISPLAY_MODE
     CJNE A, #02H, LCD_BS_NORMAL
 
-    ; --- MODE 2 (LOGIC) DISPLAY BACKSPACE ---
-    MOV A, EXPR_LEN
-    JZ LCD_BS_DONE
+; --- MODE 2 (LOGIC) DISPLAY BACKSPACE ---
+    MOV A, EXPR_LEN		;logic expression buffer
+    JZ LCD_BS_DONE		; do nothing if buffer empty
     MOV A, #008H                ; Hide LCD while rebuilding line 1 atomically
     LCALL LCD_CMD               ; Prevent a stale Arithmetic frame from flashing
     DEC EXPR_LEN
@@ -441,14 +442,12 @@ LOGIC_SET_OPERATOR_FLAG:
     SETB 20H.1
 LOGIC_OPERATOR_FLAG_DONE:
     RET
-
+;----Normal Display Backspace----
 LCD_BS_NORMAL:
     ; --- MODE 1 & 3 DISPLAY BACKSPACE ---
     MOV BIT_TEMP, LAST_CHAR_LEN
     LCALL ERASE_ONE_LCD_CHAR
     DEC BIT_TEMP
-    MOV LAST_CHAR_LEN, #01H
-
     ; Delete the remainder of a multi-character token (^2 or ^0.5), while
     ; preserving the complete ANS token at columns 1-3.
 LCD_BS_TOKEN_LOOP:
@@ -456,7 +455,7 @@ LCD_BS_TOKEN_LOOP:
     JZ LCD_BS_RESTORE_CURSOR
     JNB 20H.5, LCD_BS_ERASE_TOKEN_CHAR
     MOV A, INPUT_CURSOR_ADDR
-    CJNE A, #083H, LCD_BS_ERASE_TOKEN_CHAR
+    CJNE A, #083H, LCD_BS_ERASE_TOKEN_CHAR	;83H= posistion after "ANS"
     SJMP LCD_BS_RESTORE_CURSOR   ; Do not erase the S in ANS
 LCD_BS_ERASE_TOKEN_CHAR:
     LCALL ERASE_ONE_LCD_CHAR
@@ -466,7 +465,8 @@ LCD_BS_ERASE_TOKEN_CHAR:
 LCD_BS_RESTORE_CURSOR:
     MOV LAST_CHAR_LEN, #01H    ; Reset default width to 1
 LCD_BS_DONE:
-    LJMP LCD_CURSOR_ON
+    LCALL LCD_CURSOR_ON
+    RET
 
 HANDLE_LCD_BACKSPACE_ANS:
     ; ANS is one logical token, not three independent characters.
@@ -516,15 +516,15 @@ LCD_SOFT_POWER_OFF:
 ; ===== D03: UART INTERRUPT RECEIVE AND MAIN-CONTEXT ACK =====
 ; The ISR captures one byte quickly. RECEIVE_BYTE consumes it and sends ACK.
 UART_INIT:
-    ANL TMOD, #0FH              
-    ORL TMOD, #020H             
-    ANL PCON, #07FH             
-    MOV TH1, #0FDH              
-    MOV TL1, #0FDH
-    MOV SCON, #050H             
+    ANL TMOD, #0FH	;timer 1 reset to mode 0
+    ORL TMOD, #020H	;set to mode 2: 8-bit timer 
+    ANL PCON, #07FH	;0111 1111, Clear SMOD: normal UART baud rate
+    MOV TH1, #0FDH	;253:Timer 1’s reload value, after overflow, reload to FDH
+    MOV TL1, #0FDH	;load initial timer 1 value
+    MOV SCON, #050H	;0101 0000， UART mode 1
     CLR TI
     CLR RI
-    SETB TR1
+    SETB TR1		;Sets the Timer 1 run-control bit in TCON
     RET
 
 UART_ISR:
@@ -691,8 +691,8 @@ SHOW_ANS_EXPRESSION:
     LJMP LCD_CURSOR_ON
 
 SHOW_NORMAL_ANS:
-	MOV A, #LCD_LINE1
-	LCALL LCD_CMD
+    MOV A, #LCD_LINE1
+    LCALL LCD_CMD
     MOV DPTR, #STR_ANS
     LCALL LCD_PUTS
     MOV INPUT_CURSOR_ADDR, #083H
@@ -1023,6 +1023,7 @@ ERROR_PRINT:
 
 ; ===== D09: DECIMAL, BINARY AND REMAINDER RESULT FORMATTING =====
 LCD_PRINT_BIN8_RIGHT:
+    MOV RESULT_L, A
     LCALL LCD_CURSOR_OFF
     MOV A, #LCD_LINE2
     LCALL LCD_CMD
@@ -1382,4 +1383,3 @@ SCROLL_DEVELOPERS:  DB 'DANIEL CHEE    GOH SHAO SEAN    TAN E-KEN    THEN MUN PI
                     DB 'DANIEL CHEE    '
 
     END
-
